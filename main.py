@@ -7,10 +7,14 @@ import warnings
 from datetime import datetime, timedelta
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Union
 import json
+import os
 
 warnings.filterwarnings('ignore')
+
+# Create logs directory if it doesn't exist
+os.makedirs('logs', exist_ok=True)
 
 print("🚀 ULTRA ADVANCED AI TRADING BOT STARTING...")
 
@@ -72,7 +76,7 @@ class UltraAdvancedTradingBot:
         
         for asset, data in market_data.items():
             # Multi-strategy analysis
-            strategy_signals = self.strategy_engine.run_all_strategies(data['data'])  # FIX: pass data['data']
+            strategy_signals = self.strategy_engine.run_all_strategies(data['data'])
             
             # Risk assessment
             risk_score = self.risk_manager.assess_trade_risk(asset, data, strategy_signals)
@@ -95,15 +99,17 @@ class UltraAdvancedTradingBot:
         
         for asset, signal_info in signals.items():
             if self.risk_manager.approve_trade(signal_info, self.balance):
+                position_amount = signal_info['position_size'] * self.balance
                 
                 trade_details = {
                     'asset': asset,
                     'timestamp': datetime.now(),
                     'signal': signal_info['signal'],
                     'price': market_data[asset]['current_price'],
-                    'size': signal_info['position_size'] * self.balance,  # FIX: calculate actual amount
+                    'size': position_amount,
                     'confidence': signal_info['confidence'],
-                    'risk_score': signal_info['risk_score']
+                    'risk_score': signal_info['risk_score'],
+                    'units': position_amount / market_data[asset]['current_price']
                 }
                 
                 # Simulate trade execution
@@ -129,6 +135,7 @@ class UltraAdvancedTradingBot:
         # 1. Get market data
         market_data = self.get_multiple_market_data()
         if not market_data:
+            print("❌ No market data available")
             return None
         
         # 2. AI Analysis
@@ -137,6 +144,14 @@ class UltraAdvancedTradingBot:
         # 3. Market Regime Detection
         market_regime = self.market_analyzer.detect_market_regime(market_data)
         print(f"🏛️  Market Regime: {market_regime}")
+        
+        # Display signals
+        if signals:
+            print(f"🎯 Signals Found: {len(signals)}")
+            for asset, signal in signals.items():
+                print(f"   📢 {asset}: {signal['signal']} (Confidence: {signal['confidence']:.2f})")
+        else:
+            print("🟡 No trading signals generated")
         
         return {
             'market_data': market_data,
@@ -195,13 +210,14 @@ class UltraAdvancedTradingBot:
         total_trades = len(self.trade_history)
         if total_trades > 0:
             winning_trades = len([t for t in self.trade_history if t.get('profit', 0) > 0])
-            win_rate = winning_trades / total_trades
+            win_rate = winning_trades / total_trades if total_trades > 0 else 0
             
             self.performance_metrics = {
                 'total_trades': total_trades,
                 'win_rate': win_rate,
                 'current_balance': self.balance,
-                'total_profit': self.balance - self.initial_balance
+                'total_profit': self.balance - self.initial_balance,
+                'return_percentage': ((self.balance - self.initial_balance) / self.initial_balance) * 100
             }
     
     def generate_comprehensive_report(self, session_trades):
@@ -212,19 +228,37 @@ class UltraAdvancedTradingBot:
         
         print(f"💰 Initial Balance: ${self.initial_balance:,.2f}")
         print(f"💰 Current Balance: ${self.balance:,.2f}")
-        print(f"📈 Net P/L: ${self.balance - self.initial_balance:,.2f}")
+        
+        profit_loss = self.balance - self.initial_balance
+        profit_color = "🟢" if profit_loss >= 0 else "🔴"
+        print(f"📈 Net P/L: {profit_color} ${profit_loss:,.2f}")
         
         if self.trade_history:
             print(f"\n🔢 Total Trades: {len(self.trade_history)}")
             print(f"🎯 Session Trades: {len(session_trades)}")
             
             # Risk metrics
-            max_position = max([t['size'] for t in self.trade_history]) if self.trade_history else 0
-            print(f"⚡ Max Position Size: ${max_position:.2f}")
+            if self.trade_history:
+                max_position = max([t['size'] for t in self.trade_history])
+                avg_position = np.mean([t['size'] for t in self.trade_history])
+                print(f"⚡ Max Position Size: ${max_position:.2f}")
+                print(f"📊 Average Position Size: ${avg_position:.2f}")
             
         print(f"\n📈 Performance Metrics:")
         for metric, value in self.performance_metrics.items():
-            print(f"   {metric.replace('_', ' ').title()}: {value}")
+            if isinstance(value, float):
+                if 'rate' in metric or 'percentage' in metric:
+                    print(f"   {metric.replace('_', ' ').title()}: {value:.2%}")
+                else:
+                    print(f"   {metric.replace('_', ' ').title()}: {value:.2f}")
+            else:
+                print(f"   {metric.replace('_', ' ').title()}: {value}")
+        
+        # Trade breakdown
+        if session_trades:
+            print(f"\n🎯 Session Trade Breakdown:")
+            for i, trade in enumerate(session_trades, 1):
+                print(f"   {i}. {trade['asset']} - {trade['signal']} - ${trade['size']:.2f}")
 
 class RiskManager:
     def __init__(self):
@@ -251,6 +285,9 @@ class RiskManager:
     
     def calculate_position_size(self, confidence, risk_score):
         """Calculate optimal position size using Kelly Criterion"""
+        if risk_score == 0:
+            risk_score = 0.01  # Avoid division by zero
+            
         kelly_fraction = confidence - (1 - confidence) / (1 / risk_score - 1)
         position_size = max(0.01, min(self.max_position_size, kelly_fraction * 0.5))  # Half Kelly
         return position_size
@@ -258,12 +295,12 @@ class RiskManager:
     def approve_trade(self, signal_info, current_balance):
         """Final approval for trade execution"""
         required_size = signal_info['position_size']
-        return required_size <= current_balance * self.max_position_size
+        return required_size <= self.max_position_size and required_size * current_balance <= current_balance
 
 class MarketAnalyzer:
     def calculate_all_indicators(self, data):
         """Calculate all technical indicators"""
-        if data.empty:
+        if data.empty or len(data) < 20:
             return data
             
         df = data.copy()
@@ -300,7 +337,7 @@ class MarketAnalyzer:
     
     def analyze_trend(self, data):
         """Analyze market trend"""
-        if data.empty:
+        if data.empty or 'sma_20' not in data.columns:
             return "NEUTRAL"
             
         current_price = data['Close'].iloc[-1]
@@ -319,14 +356,23 @@ class MarketAnalyzer:
             return 0.1
             
         returns = data['Close'].pct_change().dropna()
+        if len(returns) < window:
+            return 0.1
+            
         volatility = returns.rolling(window=window).std().iloc[-1]
         return volatility if not np.isnan(volatility) else 0.1
     
     def detect_market_regime(self, market_data):
         """Detect current market regime"""
+        if not market_data:
+            return "UNKNOWN"
+            
         total_assets = len(market_data)
-        bullish_count = sum(1 for data in market_data.values() if data['trend'] == 'BULLISH')
+        bullish_count = sum(1 for data in market_data.values() if data.get('trend') == 'BULLISH')
         
+        if total_assets == 0:
+            return "UNKNOWN"
+            
         if bullish_count / total_assets > 0.7:
             return "STRONG_BULL"
         elif bullish_count / total_assets < 0.3:
@@ -371,7 +417,7 @@ class StrategyEngine:
     
     def momentum_strategy(self, data):
         """Momentum-based strategy"""
-        if data.empty:
+        if data.empty or len(data) < 20:
             return "HOLD", 0.0
             
         price_trend = data['Close'].iloc[-1] > data['sma_20'].iloc[-1]
@@ -386,7 +432,7 @@ class StrategyEngine:
     
     def mean_reversion_strategy(self, data):
         """Mean reversion strategy"""
-        if data.empty:
+        if data.empty or 'bb_upper' not in data.columns:
             return "HOLD", 0.0
             
         current_price = data['Close'].iloc[-1]
@@ -415,7 +461,7 @@ class StrategyEngine:
     
     def rsi_oversold_strategy(self, data):
         """RSI overbought/oversold strategy"""
-        if data.empty:
+        if data.empty or 'rsi' not in data.columns:
             return "HOLD", 0.0
             
         rsi = data['rsi'].iloc[-1]
@@ -442,10 +488,88 @@ class StrategyEngine:
         else:
             return "HOLD"
 
+def main():
+    """Main function with menu system"""
+    print("=" * 60)
+    print("🎯 QUOTEX AI TRADING BOT")
+    print("🚀 Professional Sigma 1 Generator")
+    print("=" * 60)
+    print(f"📅 Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    while True:
+        print("\n📋 MAIN MENU:")
+        print("1. 🎯 Generate Signals Now")
+        print("2. 🤖 Start Auto Bot (30min intervals)")
+        print("3. 📊 View Dashboard & Analytics")
+        print("4. ⚡ Quick Test (Fast Analysis)")
+        print("5. 📋 View Logs & Reports")
+        print("6. 🚪 Exit")
+        
+        choice = input("\nEnter your choice (1-6): ").strip()
+        
+        if choice == '1':
+            print("\n🎯 GENERATING TRADING SIGNALS...")
+            print("⏳ This may take 1-2 minutes...")
+            try:
+                bot = UltraAdvancedTradingBot()
+                analysis_result = bot.run_comprehensive_analysis()
+                if analysis_result and analysis_result['signals']:
+                    print("\n✅ Signals generated successfully!")
+                else:
+                    print("\n🟡 No high-confidence signals found")
+            except Exception as e:
+                print(f"❌ Error generating signals: {e}")
+            
+            input("\nPress Enter to continue...")
+            
+        elif choice == '2':
+            print("\n🤖 STARTING AUTO TRADING BOT...")
+            print("⏰ Running every 30 minutes...")
+            try:
+                bot = UltraAdvancedTradingBot()
+                bot.start_advanced_trading(iterations=4)
+            except Exception as e:
+                print(f"❌ Error in auto trading: {e}")
+            
+            input("\nPress Enter to continue...")
+            
+        elif choice == '3':
+            print("\n📊 DASHBOARD & ANALYTICS")
+            print("📈 Performance metrics will be displayed here...")
+            # Add dashboard functionality here
+            input("\nPress Enter to continue...")
+            
+        elif choice == '4':
+            print("\n⚡ QUICK TEST ANALYSIS")
+            print("🔍 Running fast market analysis...")
+            try:
+                bot = UltraAdvancedTradingBot()
+                quick_result = bot.run_comprehensive_analysis()
+                if quick_result:
+                    print("✅ Quick test completed!")
+            except Exception as e:
+                print(f"❌ Quick test error: {e}")
+            
+            input("\nPress Enter to continue...")
+            
+        elif choice == '5':
+            print("\n📋 LOGS & REPORTS")
+            print("📄 Viewing recent trading activity...")
+            # Add log viewing functionality here
+            input("\nPress Enter to continue...")
+            
+        elif choice == '6':
+            print("\n👋 Exiting QUOTEX AI TRADING BOT...")
+            print("✅ Thank you for using our advanced trading system!")
+            break
+            
+        else:
+            print("❌ Invalid choice! Please enter 1-6")
+            input("Press Enter to continue...")
+
 if __name__ == "__main__":
     try:
-        bot = UltraAdvancedTradingBot()
-        bot.start_advanced_trading(iterations=4)
+        main()
     except KeyboardInterrupt:
         print("\n🛑 Bot stopped by user")
     except Exception as e:
